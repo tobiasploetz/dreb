@@ -26,7 +26,7 @@ export interface EmbedderOptions {
 // ============================================================================
 
 const DEFAULT_MODEL_NAME = "Xenova/all-MiniLM-L6-v2";
-const DEFAULT_BATCH_SIZE = 32;
+const DEFAULT_BATCH_SIZE = 512;
 const DEFAULT_DIMENSION = 384;
 
 /**
