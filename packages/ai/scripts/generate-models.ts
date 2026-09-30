@@ -4,6 +4,7 @@ import { writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { Api, KnownProvider, Model } from "../src/types.js";
+import { deriveCodexModels } from "./codex-models.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -927,96 +928,8 @@ async function generateModels() {
 	}
 
 	// OpenAI Codex (ChatGPT OAuth) models
-	// NOTE: These are not fetched from models.dev; we keep a small, explicit list to avoid aliases.
-	// The Codex surface is a distinct API surface (chatgpt.com backend-api + ChatGPT OAuth):
-	// models.dev does not track it (no openai-codex/codex top-level key), and per-model
-	// semantics differ (context caps, effort clamping, service-tier pricing, Responses Lite
-	// protocol), so the manual list is the correct pattern. The codex CLI's model list is a
-	// candidate future live source. The list is live-probe-verified (2026-09-07): only the
-	// entries below resolve with a ChatGPT account.
-	// Most Codex models use the observed 272k ChatGPT-auth server limit. GPT-5.5
-	// has a 400k context window; GPT-5.6 Responses Lite models support 372k.
-	// GPT-5.6+ cache writes are billed at 1.25x the input rate (OpenAI pricing docs),
-	// unlike earlier Codex models which are left at cacheWrite 0.
-	const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
-	const CODEX_CONTEXT = 272000;
-	const CODEX_LARGE_CONTEXT = 400000;
-	const CODEX_RESPONSES_LITE_CONTEXT = 372000;
-	const CODEX_MAX_TOKENS = 128000;
-	const codexModels: Model<"openai-codex-responses">[] = [
-		{
-			id: "gpt-5.4-mini",
-			name: "GPT-5.4 Mini",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
-			contextWindow: CODEX_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.5",
-			name: "GPT-5.5",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 0 },
-			contextWindow: CODEX_LARGE_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.6-sol",
-			name: "GPT-5.6 Sol",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
-			contextWindow: CODEX_RESPONSES_LITE_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.6-terra",
-			name: "GPT-5.6 Terra",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 },
-			contextWindow: CODEX_RESPONSES_LITE_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-5.6-luna",
-			name: "GPT-5.6 Luna",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
-			contextWindow: CODEX_RESPONSES_LITE_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-		{
-			id: "gpt-6-astra",
-			name: "GPT-6 Astra",
-			api: "openai-codex-responses",
-			provider: "openai-codex",
-			baseUrl: CODEX_BASE_URL,
-			reasoning: true,
-			input: ["text", "image"],
-			cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
-			contextWindow: CODEX_CONTEXT,
-			maxTokens: CODEX_MAX_TOKENS,
-		},
-	];
+	// Codex surface is derived from the OpenAI catalog — see scripts/codex-models.ts.
+	const codexModels = deriveCodexModels(allModels);
 	allModels.push(...codexModels);
 
 	// Add missing Grok models
@@ -1600,4 +1513,7 @@ export const MODELS = {
 }
 
 // Run the generator
-generateModels().catch(console.error);
+generateModels().catch((error) => {
+	console.error(error);
+	process.exitCode = 1;
+});
