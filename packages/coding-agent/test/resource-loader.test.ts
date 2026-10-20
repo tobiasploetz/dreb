@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as config from "../src/config.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import { ExtensionRunner } from "../src/core/extensions/runner.js";
 import { ModelRegistry } from "../src/core/model-registry.js";
@@ -310,6 +311,216 @@ Content`,
 			await loader.reload();
 
 			expect(loader.getAppendSystemPrompt()).toContain("Additional instructions.");
+		});
+	});
+
+	describe("built-in skill override settings", () => {
+		let packageDir: string;
+		let packageSkill: string;
+		let customLoser: string;
+		let builtinLoser: string;
+		let unrelatedBuiltin: string;
+		let discoveredSkill: string;
+
+		function writeSkill(root: string, directory: string, name = directory): string {
+			const dir = join(root, directory);
+			mkdirSync(dir, { recursive: true });
+			const path = join(dir, "SKILL.md");
+			writeFileSync(path, `---\nname: ${name}\ndescription: Test skill\n---\nInstructions`);
+			return path;
+		}
+
+		function writeSettings(global?: boolean, project?: boolean): SettingsManager {
+			writeFileSync(
+				join(agentDir, "settings.json"),
+				JSON.stringify({ packages: [packageDir], allowBuiltinSkillOverrides: global }),
+			);
+			mkdirSync(join(cwd, ".dreb"), { recursive: true });
+			writeFileSync(join(cwd, ".dreb", "settings.json"), JSON.stringify({ allowBuiltinSkillOverrides: project }));
+			return SettingsManager.create(cwd, agentDir);
+		}
+
+		beforeEach(() => {
+			// Keep normal discovery real, but independent of the developer's home and ancestor skills.
+			vi.stubEnv("HOME", tempDir);
+			mkdirSync(join(cwd, ".git"));
+			const builtinPackageDir = join(tempDir, "builtin-package");
+			vi.spyOn(config, "getPackageDir").mockReturnValue(builtinPackageDir);
+			builtinLoser = writeSkill(join(builtinPackageDir, "skills"), "builtin-override", "override-target");
+			unrelatedBuiltin = writeSkill(join(builtinPackageDir, "skills"), "unrelated-builtin");
+			packageDir = join(tempDir, "local-package");
+			packageSkill = writeSkill(join(packageDir, "workflows"), "custom-override", "override-target");
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({ name: "test-skill-package", dreb: { skills: ["workflows"] } }),
+			);
+			customLoser = writeSkill(join(agentDir, "skills"), "override-target");
+			discoveredSkill = writeSkill(join(cwd, ".dreb", "skills"), "normal-discovery");
+		});
+
+		afterEach(() => {
+			vi.restoreAllMocks();
+			vi.unstubAllEnvs();
+		});
+
+		function expectPolicy(loader: DefaultResourceLoader, enabled: boolean) {
+			const { skills, diagnostics } = loader.getSkills();
+			expect(skills.find((skill) => skill.name === "override-target")).toMatchObject({
+				filePath: packageSkill,
+				sourceInfo: {
+					path: packageSkill,
+					source: packageDir,
+					scope: "user",
+					origin: "package",
+					baseDir: packageDir,
+				},
+			});
+			expect(skills.find((skill) => skill.filePath === unrelatedBuiltin)?.sourceInfo.source).toBe("builtin");
+			expect(skills.find((skill) => skill.filePath === discoveredSkill)?.sourceInfo).toMatchObject({
+				source: "auto",
+				scope: "project",
+				origin: "top-level",
+			});
+			expect(diagnostics.filter((d) => d.type === "warning")).toEqual([
+				{
+					type: "warning",
+					message: 'name "override-target" does not match parent directory "custom-override"',
+					path: packageSkill,
+				},
+				{
+					type: "warning",
+					message: 'name "override-target" does not match parent directory "builtin-override"',
+					path: builtinLoser,
+				},
+			]);
+			expect(diagnostics.filter((d) => d.type === "collision")).toEqual(
+				(enabled ? [customLoser] : [customLoser, builtinLoser]).map((loserPath) => ({
+					type: "collision",
+					message: 'name "override-target" collision',
+					path: loserPath,
+					collision: { resourceType: "skill", name: "override-target", winnerPath: packageSkill, loserPath },
+				})),
+			);
+		}
+
+		it.each([
+			[undefined, undefined, false],
+			[false, undefined, false],
+			[true, undefined, true],
+			[true, false, false],
+			[false, true, true],
+		])("loads the configured package with global %s and project %s", async (global, project, expected) => {
+			const settingsManager = writeSettings(global, project);
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+			expectPolicy(loader, expected!);
+		});
+
+		it("uses refreshed settings on reload without changing package selection or discovery", async () => {
+			const settingsManager = writeSettings(false);
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+			expectPolicy(loader, false);
+			const originalSkills = loader.getSkills().skills;
+
+			writeSettings(true);
+			settingsManager.reload();
+			await loader.reload();
+			expectPolicy(loader, true);
+			expect(loader.getSkills().skills).toEqual(originalSkills);
+
+			writeSettings(true, false);
+			settingsManager.reload();
+			await loader.reload();
+			expectPolicy(loader, false);
+			expect(loader.getSkills().skills).toEqual(originalSkills);
+		});
+
+		it("uses the current policy when extending resources and retains custom collisions", async () => {
+			const settingsManager = writeSettings(false);
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload();
+			expectPolicy(loader, false);
+
+			const extraSkillDir = join(tempDir, "extension-skills");
+			const extraSkill = writeSkill(extraSkillDir, "override-target");
+			const builtinExtensionTarget = writeSkill(join(tempDir, "builtin-package", "skills"), "extension-target");
+			const extensionTarget = writeSkill(extraSkillDir, "extension-target");
+			const skillPaths = [
+				{
+					path: extraSkillDir,
+					metadata: {
+						source: "extension:test",
+						scope: "temporary" as const,
+						origin: "top-level" as const,
+						baseDir: extraSkillDir,
+					},
+				},
+			];
+			settingsManager.applyOverrides({ allowBuiltinSkillOverrides: true });
+			loader.extendResources({ skillPaths });
+			const enabled = loader.getSkills();
+
+			expect(enabled.skills.find((skill) => skill.name === "override-target")?.filePath).toBe(packageSkill);
+			expect(enabled.skills.find((skill) => skill.name === "extension-target")).toMatchObject({
+				filePath: extensionTarget,
+				sourceInfo: { source: "extension:test", scope: "temporary", origin: "top-level", baseDir: extraSkillDir },
+			});
+			expect(enabled.diagnostics.filter((d) => d.type === "collision").map((d) => d.collision)).toEqual([
+				{ resourceType: "skill", name: "override-target", winnerPath: packageSkill, loserPath: customLoser },
+				{ resourceType: "skill", name: "override-target", winnerPath: packageSkill, loserPath: extraSkill },
+			]);
+
+			settingsManager.applyOverrides({ allowBuiltinSkillOverrides: false });
+			loader.extendResources({ skillPaths });
+			const disabled = loader.getSkills();
+			expect(disabled.skills).toEqual(enabled.skills);
+			expect(disabled.diagnostics.filter((d) => d.type === "warning")).toEqual(
+				enabled.diagnostics.filter((d) => d.type === "warning"),
+			);
+			expect(disabled.diagnostics.filter((d) => d.type === "collision").map((d) => d.collision)).toEqual([
+				...enabled.diagnostics.filter((d) => d.type === "collision").map((d) => d.collision),
+				{ resourceType: "skill", name: "override-target", winnerPath: packageSkill, loserPath: builtinLoser },
+				{
+					resourceType: "skill",
+					name: "extension-target",
+					winnerPath: extensionTarget,
+					loserPath: builtinExtensionTarget,
+				},
+			]);
+		});
+
+		it("does not enable disabled discovery, but still honors explicit paths and skillsOverride", async () => {
+			const settingsManager = writeSettings(true);
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noSkills: true });
+			await loader.reload();
+			expect(loader.getSkills()).toEqual({ skills: [], diagnostics: [] });
+
+			const skillsOverride = vi.fn((base) => ({
+				...base,
+				diagnostics: [...base.diagnostics, { type: "warning", message: "override owns final diagnostics" }],
+			}));
+			const explicitLoader = new DefaultResourceLoader({
+				cwd,
+				agentDir,
+				settingsManager,
+				noSkills: true,
+				additionalSkillPaths: [packageSkill],
+				skillsOverride,
+			});
+			await explicitLoader.reload();
+			expect(skillsOverride).toHaveBeenCalledOnce();
+			expect(skillsOverride.mock.calls[0][0].diagnostics).not.toContainEqual(
+				expect.objectContaining({ type: "collision" }),
+			);
+			expect(explicitLoader.getSkills().skills.map((skill) => skill.filePath)).toEqual([
+				packageSkill,
+				unrelatedBuiltin,
+			]);
+			expect(explicitLoader.getSkills().diagnostics).toContainEqual({
+				type: "warning",
+				message: "override owns final diagnostics",
+			});
 		});
 	});
 

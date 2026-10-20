@@ -398,6 +398,8 @@ export interface LoadSkillsOptions {
 	skillPaths?: string[];
 	/** Include default skills directories. Default: true */
 	includeDefaults?: boolean;
+	/** Suppress collision diagnostics for built-ins overridden by custom skills. Default: false */
+	allowBuiltinSkillOverrides?: boolean;
 }
 
 function normalizePath(input: string): string {
@@ -418,7 +420,13 @@ function resolveSkillPath(p: string, cwd: string): string {
  * Returns skills and any validation diagnostics.
  */
 export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
-	const { cwd = process.cwd(), agentDir, skillPaths = [], includeDefaults = true } = options;
+	const {
+		cwd = process.cwd(),
+		agentDir,
+		skillPaths = [],
+		includeDefaults = true,
+		allowBuiltinSkillOverrides = false,
+	} = options;
 
 	// Resolve agentDir - if not provided, use default from config
 	const resolvedAgentDir = agentDir ?? getAgentDir();
@@ -447,6 +455,13 @@ export function loadSkills(options: LoadSkillsOptions = {}): LoadSkillsResult {
 
 			const existing = skillMap.get(skill.name);
 			if (existing) {
+				if (
+					allowBuiltinSkillOverrides === true &&
+					skill.sourceInfo.source === "builtin" &&
+					existing.sourceInfo.source !== "builtin"
+				) {
+					continue;
+				}
 				collisionDiagnostics.push({
 					type: "collision",
 					message: `name "${skill.name}" collision`,

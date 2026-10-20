@@ -2,7 +2,7 @@ import { Type } from "@sinclair/typebox";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getModel } from "../src/models.js";
 import { streamSimple } from "../src/stream.js";
-import type { Tool } from "../src/types.js";
+import type { Model, Tool } from "../src/types.js";
 import { ZAI_GLM_5 } from "./fixtures/zai-models.js";
 
 const mockState = vi.hoisted(() => ({
@@ -283,7 +283,15 @@ describe("openai-completions tool_choice", () => {
 	});
 
 	it("uses OpenRouter reasoning object instead of reasoning_effort", async () => {
-		const model = getModel("openrouter", "deepseek/deepseek-r1")!;
+		const { compat: _compat, ...baseModel } = getModel("openai", "gpt-4o-mini")!;
+		const model: Model<"openai-completions"> = {
+			...baseModel,
+			id: "deepseek/deepseek-r1",
+			provider: "openrouter",
+			baseUrl: "https://openrouter.ai/api/v1",
+			api: "openai-completions",
+			reasoning: true,
+		};
 		let payload: unknown;
 
 		await streamSimple(

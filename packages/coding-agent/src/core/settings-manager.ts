@@ -146,6 +146,7 @@ export interface Settings {
 	prompts?: string[]; // Array of local prompt template paths or directories
 	themes?: string[]; // Array of local theme file paths or directories
 	enableSkillCommands?: boolean; // default: true - register skills as /skill:name commands
+	allowBuiltinSkillOverrides?: boolean; // default: false - suppress collision diagnostics for overridden built-in skills
 	terminal?: TerminalSettings;
 	images?: ImageSettings;
 	enabledModels?: string[]; // Model patterns for cycling (same format as --models CLI flag)
@@ -1201,6 +1202,10 @@ export class SettingsManager {
 		projectSettings.themes = paths;
 		this.markProjectModified("themes");
 		this.saveProjectSettings(projectSettings);
+	}
+
+	getAllowBuiltinSkillOverrides(): boolean {
+		return this.settings.allowBuiltinSkillOverrides === true;
 	}
 
 	getEnableSkillCommands(): boolean {

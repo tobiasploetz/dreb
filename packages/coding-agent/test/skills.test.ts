@@ -1,7 +1,8 @@
-import { readFileSync } from "fs";
-import { homedir } from "os";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as config from "../src/config.js";
 import type { ResourceDiagnostic } from "../src/core/diagnostics.js";
 import { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, type Skill } from "../src/core/skills.js";
 import { createSyntheticSourceInfo } from "../src/core/source-info.js";
@@ -707,30 +708,198 @@ describe("skills", () => {
 			expect(finalWorkflow).toContain("If on a feature branch with a PR: `/skill:mach6-review <pr-number>`");
 		});
 
-		it("should allow user/project skills to override built-ins (built-ins are lowest priority)", () => {
-			// Load with a fixture skill named "mach6-issue" to collide with the built-in
-			const { skills, diagnostics } = loadSkills({
-				agentDir: emptyAgentDir,
-				cwd: emptyCwd,
-				skillPaths: [join(fixturesDir, "builtin-override")],
+		it.each([undefined, false, true])(
+			"keeps the custom winner and only suppresses its built-in collision when enabled (%s)",
+			(allowBuiltinSkillOverrides) => {
+				const builtin = getBuiltInSkill("mach6-issue");
+				const customDir = join(fixturesDir, "builtin-override");
+				const custom = loadSkillsFromDir({ dir: customDir, source: "path" });
+				const { skills, diagnostics } = loadSkills({
+					agentDir: emptyAgentDir,
+					cwd: emptyCwd,
+					skillPaths: [customDir],
+					...(allowBuiltinSkillOverrides === undefined ? {} : { allowBuiltinSkillOverrides }),
+				});
+
+				expect(skills.find((s) => s.name === "mach6-issue")).toEqual(custom.skills[0]);
+				expect(skills.find((s) => s.name === "mach6-plan")).toEqual(getBuiltInSkill("mach6-plan"));
+				expect(diagnostics.filter((d) => d.type === "warning")).toEqual(custom.diagnostics);
+				expect(custom.diagnostics).toContainEqual({
+					type: "warning",
+					message: 'name "mach6-issue" does not match parent directory "builtin-override"',
+					path: custom.skills[0].filePath,
+				});
+				expect(diagnostics.filter((d) => d.type === "collision")).toEqual(
+					allowBuiltinSkillOverrides === true
+						? []
+						: [
+								{
+									type: "collision",
+									message: 'name "mach6-issue" collision',
+									path: builtin.filePath,
+									collision: {
+										resourceType: "skill",
+										name: "mach6-issue",
+										winnerPath: custom.skills[0].filePath,
+										loserPath: builtin.filePath,
+									},
+								},
+							],
+				);
+			},
+		);
+	});
+
+	describe("built-in override diagnostic boundaries", () => {
+		let tempDir: string;
+		let builtinDir: string;
+
+		beforeEach(() => {
+			tempDir = mkdtempSync(join(tmpdir(), "skills-overrides-"));
+			builtinDir = join(tempDir, "package", "skills");
+			mkdirSync(builtinDir, { recursive: true });
+			vi.spyOn(config, "getPackageDir").mockReturnValue(join(tempDir, "package"));
+		});
+
+		afterEach(() => {
+			vi.restoreAllMocks();
+			rmSync(tempDir, { recursive: true, force: true });
+		});
+
+		function writeSkill(root: string, directory: string, name = directory, description = "Test skill"): string {
+			const dir = join(root, directory);
+			mkdirSync(dir, { recursive: true });
+			const path = join(dir, "SKILL.md");
+			writeFileSync(path, `---\nname: ${name}\ndescription: ${description}\n---\nInstructions`);
+			return path;
+		}
+
+		function load(skillPaths: string[], allowBuiltinSkillOverrides = true) {
+			return loadSkills({
+				cwd: tempDir,
+				agentDir: join(tempDir, "agent"),
+				includeDefaults: false,
+				skillPaths,
+				allowBuiltinSkillOverrides,
 			});
+		}
 
-			// The path skill should win because built-ins are loaded last (lowest priority)
-			const mach6Issue = skills.find((s) => s.name === "mach6-issue");
-			expect(mach6Issue).toBeDefined();
-			expect(mach6Issue!.sourceInfo.source).not.toBe("builtin");
-			expect(mach6Issue!.description).toContain("User override");
+		it("retains custom-custom collisions when the matching built-in collision is suppressed", () => {
+			const first = writeSkill(join(tempDir, "first"), "calendar");
+			const second = writeSkill(join(tempDir, "second"), "calendar");
+			const builtin = writeSkill(builtinDir, "calendar");
+			const baseline = load([first, second], false);
+			const enabled = load([first, second]);
 
-			// Built-in should appear as the collision loser, not winner
-			const builtinWinners = diagnostics.filter(
-				(d: ResourceDiagnostic) => d.type === "collision" && d.collision?.winnerPath?.includes("skills/mach6-"),
-			);
-			expect(builtinWinners).toHaveLength(0);
+			expect(enabled.skills).toEqual(baseline.skills);
+			expect(enabled.skills[0].filePath).toBe(first);
+			expect(baseline.diagnostics).toHaveLength(2);
+			expect(baseline.diagnostics[1].collision).toEqual({
+				resourceType: "skill",
+				name: "calendar",
+				winnerPath: first,
+				loserPath: builtin,
+			});
+			expect(enabled.diagnostics).toEqual([
+				{
+					type: "collision",
+					message: 'name "calendar" collision',
+					path: second,
+					collision: { resourceType: "skill", name: "calendar", winnerPath: first, loserPath: second },
+				},
+			]);
+		});
 
-			const builtinLosers = diagnostics.filter(
-				(d: ResourceDiagnostic) => d.type === "collision" && d.collision?.loserPath?.includes("skills/mach6-"),
-			);
-			expect(builtinLosers.length).toBeGreaterThan(0);
+		it("still reports collisions between two built-ins", () => {
+			const first = writeSkill(join(builtinDir, "first"), "calendar");
+			const second = writeSkill(join(builtinDir, "second"), "calendar");
+			const baseline = load([], false);
+			const enabled = load([]);
+
+			expect(enabled).toEqual(baseline);
+			expect(enabled.skills[0].sourceInfo.source).toBe("builtin");
+			expect(enabled.skills[0].filePath).toBe(first);
+			expect(enabled.diagnostics).toEqual([
+				{
+					type: "collision",
+					message: 'name "calendar" collision',
+					path: second,
+					collision: { resourceType: "skill", name: "calendar", winnerPath: first, loserPath: second },
+				},
+			]);
+		});
+
+		it("preserves custom and built-in validation, parse, and loading diagnostics", () => {
+			const customDir = join(tempDir, "custom");
+			const custom = writeSkill(customDir, "custom-mismatch", "calendar", "x".repeat(1025));
+			const builtin = writeSkill(builtinDir, "builtin-mismatch", "calendar", "x".repeat(1025));
+			const rejectedPaths: string[] = [];
+			for (const root of [customDir, builtinDir]) {
+				const invalidYaml = writeSkill(root, "invalid-yaml");
+				writeFileSync(invalidYaml, "---\nname: [invalid\n---\nInstructions");
+				const missingDescription = writeSkill(root, "missing-description", "missing-description", "");
+				rejectedPaths.push(invalidYaml, missingDescription);
+			}
+			const missingPath = join(tempDir, "missing");
+			const nonMarkdown = join(tempDir, "not-a-skill.txt");
+			writeFileSync(nonMarkdown, "not a skill");
+			const paths = [customDir, missingPath, nonMarkdown];
+			const baseline = load(paths, false);
+			const enabled = load(paths);
+
+			expect(enabled.skills).toEqual(baseline.skills);
+			expect(enabled.skills.map((s) => s.filePath)).toEqual([custom]);
+			expect(baseline.diagnostics.filter((d) => d.type === "collision")).toHaveLength(1);
+			expect(enabled.diagnostics).toEqual(baseline.diagnostics.filter((d) => d.type !== "collision"));
+			for (const path of [custom, builtin]) {
+				expect(enabled.diagnostics).toContainEqual({
+					type: "warning",
+					message: "description exceeds 1024 characters (1025)",
+					path,
+				});
+				expect(enabled.diagnostics.some((d) => d.path === path && d.message.includes("does not match"))).toBe(true);
+			}
+			for (const path of rejectedPaths) {
+				expect(enabled.diagnostics).toContainEqual({
+					type: "warning",
+					message: path.includes("invalid-yaml") ? expect.stringContaining("at line") : "description is required",
+					path,
+				});
+			}
+			expect(enabled.diagnostics).toContainEqual({
+				type: "warning",
+				message: "skill path does not exist",
+				path: missingPath,
+			});
+			expect(enabled.diagnostics).toContainEqual({
+				type: "warning",
+				message: "skill path is not a markdown file",
+				path: nonMarkdown,
+			});
+		});
+
+		it("keeps the missing built-in directory warning", () => {
+			rmSync(builtinDir, { recursive: true });
+			expect(load([])).toEqual(load([], false));
+			expect(load([]).diagnostics).toEqual([
+				{
+					type: "warning",
+					message: `Built-in skills directory not found: ${builtinDir}`,
+					path: builtinDir,
+				},
+			]);
+		});
+
+		it.each([false, true])("silently deduplicates repeated files and symlinks (%s)", (enabled) => {
+			const path = writeSkill(join(tempDir, "custom"), "calendar");
+			mkdirSync(join(tempDir, "links"));
+			const link = join(tempDir, "links", "calendar");
+			symlinkSync(join(tempDir, "custom", "calendar"), link, "dir");
+			const result = load([path, path, link], enabled);
+
+			expect(result.skills).toHaveLength(1);
+			expect(result.skills[0].filePath).toBe(path);
+			expect(result.diagnostics).toEqual([]);
 		});
 	});
 
