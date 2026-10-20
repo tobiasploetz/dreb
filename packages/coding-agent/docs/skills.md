@@ -233,7 +233,7 @@ Unknown frontmatter fields are ignored.
 
 **Exception:** Skills with missing description are not loaded.
 
-Name collisions (same name from different locations) warn and keep the first skill found.
+Name collisions (same name from different locations) keep the first skill found and warn by default. The [built-in override setting](#overriding-built-in-skills) can suppress only collisions where a built-in loses to a custom skill.
 
 ## Example
 
@@ -290,6 +290,22 @@ dreb ships with **mach6**, a development workflow that orchestrates the full iss
 Built-in skills are always available and can be overridden by placing a skill with the same name in any [user or project location](#locations). `mach6-review` is model-invocable when the user directly asks an agent to run it, as well as user-invocable through its slash command. Agents must never start formal review autonomously; implementation must first be committed and pushed.
 
 See [docs/mach6.md](mach6.md) for full documentation.
+
+### Overriding Built-in Skills
+
+Custom skills already take precedence over same-name built-ins. By default, dreb still reports each overridden built-in as a collision. To make intentional overrides quiet, add this top-level setting to `~/.dreb/agent/settings.json` or project `.dreb/settings.json`, preserving any existing `packages` and `skills` entries:
+
+```json
+{
+  "allowBuiltinSkillOverrides": true
+}
+```
+
+`allowBuiltinSkillOverrides` defaults to `false`; an absent or `false` value keeps the existing warnings. Normal global/project merging applies: a project value overrides the global value, including a project `false` overriding a global `true`.
+
+This setting changes diagnostics only, not discovery or precedence. The same custom skill wins, and unrelated built-ins remain available. Only the collision diagnostic for a built-in losing to a custom skill is suppressed. Collisions between custom skills or between built-ins, validation warnings (including warnings on an overridden built-in), and loading errors are still reported. Loading the same real file more than once, including through a symlink, remains silently deduplicated.
+
+See the [settings reference](settings.md#resources) for other resource configuration options.
 
 ### model-routing-guide
 

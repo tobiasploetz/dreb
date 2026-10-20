@@ -442,6 +442,7 @@ Paths in `~/.dreb/agent/settings.json` resolve relative to `~/.dreb/agent`. Path
 | `prompts` | string[] | `[]` | Local prompt template paths or directories |
 | `themes` | string[] | `[]` | Local theme file paths or directories |
 | `enableSkillCommands` | boolean | `true` | Register skills as `/skill:name` commands |
+| `allowBuiltinSkillOverrides` | boolean | `false` | Suppress collision diagnostics for built-ins overridden by custom skills. Global or project; project overrides global. See [Overriding Built-in Skills](skills.md#overriding-built-in-skills) for the JSON example and warning policy. |
 
 Arrays support glob patterns and exclusions. Use `!pattern` to exclude. Use `+path` to force-include an exact path and `-path` to force-exclude an exact path.
 

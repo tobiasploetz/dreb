@@ -92,7 +92,7 @@ Provider-specific docs include Kimi vision notes that distinguish the Kimi Code 
 
 ### Workflows and customization
 
-Skills provide progressively loaded instructions for specialized tasks. They can be invoked by users as `/skill:name` or by the model through the `skill` tool, support argument substitution, and can live globally, per-project, in packages, or on the CLI.
+Skills provide progressively loaded instructions for specialized tasks. They can be invoked by users as `/skill:name` or by the model through the `skill` tool, support argument substitution, and can live globally, per-project, in packages, or on the CLI. See [quiet built-in skill overrides](packages/coding-agent/docs/skills.md#overriding-built-in-skills) when intentionally replacing bundled workflows.
 
 Extensions are TypeScript modules loaded with full access to dreb's extension API. They can add or override tools, intercept tool calls, mutate provider payloads, add commands and flags, define custom keyboard shortcuts, render custom tool output, open overlays and custom editors, persist state in sessions, register providers, surface warnings, and implement custom permission or workflow gates.
 

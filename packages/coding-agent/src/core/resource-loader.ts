@@ -788,6 +788,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 				agentDir: this.agentDir,
 				skillPaths,
 				includeDefaults: false,
+				allowBuiltinSkillOverrides: this.settingsManager.getAllowBuiltinSkillOverrides(),
 			});
 		}
 		const resolvedSkills = this.skillsOverride ? this.skillsOverride(skillsResult) : skillsResult;

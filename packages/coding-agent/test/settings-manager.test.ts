@@ -156,6 +156,78 @@ describe("SettingsManager", () => {
 		});
 	});
 
+	describe("allowBuiltinSkillOverrides", () => {
+		it.each([undefined, false, true])("reads the in-memory value with a default of false (%s)", (value) => {
+			const manager = SettingsManager.inMemory(value === undefined ? {} : { allowBuiltinSkillOverrides: value });
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(value === true);
+		});
+
+		it.each([undefined, false, true, "true", 1, null])(
+			"enables suppression only for a stored boolean true (%s)",
+			(value) => {
+				writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ allowBuiltinSkillOverrides: value }));
+				const manager = SettingsManager.create(projectDir, agentDir);
+				expect(manager.getAllowBuiltinSkillOverrides()).toBe(value === true);
+			},
+		);
+
+		it.each([
+			[true, undefined, true],
+			[false, undefined, false],
+			[true, false, false],
+			[false, true, true],
+		])("merges global %s and project %s as %s", (global, project, expected) => {
+			writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ allowBuiltinSkillOverrides: global }));
+			writeFileSync(
+				join(projectDir, ".dreb", "settings.json"),
+				JSON.stringify({ allowBuiltinSkillOverrides: project }),
+			);
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(expected);
+		});
+
+		it("defaults off without settings files", () => {
+			expect(SettingsManager.create(projectDir, agentDir).getAllowBuiltinSkillOverrides()).toBe(false);
+		});
+
+		it("applies runtime overrides and reloads updated global and project files", () => {
+			const settingsPath = join(agentDir, "settings.json");
+			const projectSettingsPath = join(projectDir, ".dreb", "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ allowBuiltinSkillOverrides: true }));
+			writeFileSync(projectSettingsPath, JSON.stringify({ allowBuiltinSkillOverrides: false }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(false);
+			manager.applyOverrides({ allowBuiltinSkillOverrides: true });
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(true);
+			manager.applyOverrides({ allowBuiltinSkillOverrides: false });
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(false);
+
+			writeFileSync(projectSettingsPath, "{}");
+			manager.reload();
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(true);
+			writeFileSync(settingsPath, JSON.stringify({ allowBuiltinSkillOverrides: false }));
+			manager.reload();
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(false);
+			writeFileSync(projectSettingsPath, JSON.stringify({ allowBuiltinSkillOverrides: true }));
+			manager.reload();
+			expect(manager.getAllowBuiltinSkillOverrides()).toBe(true);
+		});
+
+		it.each([false, true])("preserves the configured value through an unrelated write (%s)", async (value) => {
+			const settingsPath = join(agentDir, "settings.json");
+			writeFileSync(settingsPath, JSON.stringify({ allowBuiltinSkillOverrides: value, theme: "dark" }));
+			const manager = SettingsManager.create(projectDir, agentDir);
+			manager.setTheme("light");
+			await manager.flush();
+
+			expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+				allowBuiltinSkillOverrides: value,
+				theme: "light",
+			});
+			expect(SettingsManager.create(projectDir, agentDir).getAllowBuiltinSkillOverrides()).toBe(value);
+		});
+	});
+
 	describe("continue after auto-compaction", () => {
 		it("defaults off and persists the effective compaction setting", async () => {
 			const settingsPath = join(agentDir, "settings.json");
