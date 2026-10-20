@@ -492,7 +492,8 @@ describe("Context overflow error handling", () => {
 	describe.skipIf(!isExpensiveLiveApiEnabled() || !process.env.OPENROUTER_API_KEY)("OpenRouter", () => {
 		// Anthropic backend
 		it("anthropic/claude-sonnet-4 via OpenRouter - should detect overflow via isContextOverflow", async () => {
-			const model = getModel("openrouter", "anthropic/claude-sonnet-4");
+			const model = findModel("openrouter", "anthropic/claude-sonnet-4");
+			if (!model) throw new Error("OpenRouter model anthropic/claude-sonnet-4 is not registered");
 			const result = await testContextOverflow(model, process.env.OPENROUTER_API_KEY!);
 			logResult(result);
 
