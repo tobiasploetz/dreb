@@ -7,8 +7,9 @@ import type { Api, Model } from "../../src/types.js";
  * first catalog match made live tests fail with "model is not supported".
  */
 const PREFERRED: Record<"anthropic-messages" | "openai-completions" | "openai-responses", readonly string[]> = {
-	"anthropic-messages": ["claude-opus-4.8", "claude-opus-4.7"],
-	"openai-completions": ["claude-sonnet-5", "claude-opus-5", "gemini-3.8-flash"],
+	"anthropic-messages": ["claude-sonnet-5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7"],
+	// Copilot Claude now uses Anthropic Messages; Gemini is the broadly entitled completions model.
+	"openai-completions": ["gemini-3.8-flash", "gemini-3.7-flash"],
 	"openai-responses": ["gpt-6-luna", "gpt-6-astra", "gpt-6.1-sol", "gpt-5.3-codex"],
 };
 
