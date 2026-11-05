@@ -19,7 +19,7 @@ Edit directly or use `/settings` for common options.
 | `defaultModel` | string | - | Default model ID |
 | `defaultThinkingLevel` | string | - | `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"` |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output |
-| `singleModelMode` | boolean | `false` | Force every subagent to run on the parent session's model — per-invocation overrides, per-agent model lists, agent-definition models, and the dispatch arbiter are bypassed, and any requested model selection is reported as a warning prepended to the child's output. See [agent-models.md](agent-models.md#single-model-mode) |
+| `singleModelMode` | boolean | `false` | Force every subagent to run on the parent session's model — per-invocation overrides, per-agent model lists, agent-definition models, and the dispatch arbiter are bypassed, and any requested model selection is reported as a warning just before the child's output. See [agent-models.md](agent-models.md#single-model-mode) |
 | `thinkingBudgets` | object | - | Custom token budgets per thinking level |
 | `agentModels.models` | object | - | Per-agent model fallback lists for subagents (map of agent name → ordered model IDs). See [agent-models.md](agent-models.md) |
 | `modelSettings` | object | - | Per-model thinking-display and provider/model system-prompt overrides. See [modelSettings](#modelsettings) |
@@ -248,6 +248,8 @@ The continuation option is intended for unattended long-running work and can pro
 | `retry.maxRetries` | number | `3` | Maximum retry attempts |
 | `retry.baseDelayMs` | number | `2000` | Base delay for exponential backoff (2s, 4s, 8s) |
 | `retry.maxDelayMs` | number | `60000` | Max server-requested delay before failing (60s) |
+
+Safety refusals (for example Anthropic `stop_reason: "refusal"`) are never retried automatically: re-sending the same context to the same model is normally declined again, so the turn fails with a `Request declined by the model's safety filter` error instead. For the same reason, automatic compaction does not run after a refused turn; the next prompt compacts first if needed. If a retried request is refused, the retry cycle ends with a failed `auto_retry_end`.
 
 When a provider requests a retry delay longer than `maxDelayMs` (e.g., Google's "quota will reset after 5h"), the request fails immediately with an informative error instead of waiting silently. Set to `0` to disable the cap.
 

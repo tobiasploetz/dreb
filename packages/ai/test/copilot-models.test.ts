@@ -96,8 +96,8 @@ describe("getCopilotTestModel", () => {
 	});
 
 	it.each([
-		{ api: "anthropic-messages", ids: ["claude-opus-4.8", "claude-opus-4.7"] },
-		{ api: "openai-completions", ids: ["claude-sonnet-5", "claude-opus-5", "gemini-3.8-flash"] },
+		{ api: "anthropic-messages", ids: ["claude-sonnet-5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.7"] },
+		{ api: "openai-completions", ids: ["gemini-3.8-flash", "gemini-3.7-flash"] },
 	] as const)("retains the existing $api preference order", ({ api, ids }) => {
 		const preferred = createModel({ api, id: ids[0] });
 		const lowerRanked = ids.slice(1).map((id) => createModel({ api, id }));

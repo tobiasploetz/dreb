@@ -205,6 +205,9 @@ export function createFindToolDefinition(
 							"--max-results",
 							String(effectiveLimit),
 						];
+						if (pattern.includes("/")) {
+							args.push("--full-path");
+						}
 						// fd respects .gitignore natively with proper directory scoping.
 						// Manual --ignore-file collection was removed because fd applies
 						// those patterns globally, causing venv/.gitignore files containing

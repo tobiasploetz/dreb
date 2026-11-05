@@ -19,7 +19,7 @@ type AgentSessionEvent =
   | { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
   | { type: "background_agent_start"; agentId: string; agentType: string; taskSummary: string; sessionDir?: string }
   | { type: "subagent_arbitration"; agentId: string; status: "success" | "failure"; proposed: DispatchRoute; final: DispatchRoute | null; changed: ("agent" | "model" | "thinking")[]; step?: number; errorCode?: string; errorMessage?: string }
-  | { type: "background_agent_end"; agentId: string; agentType: string; success: boolean; model?: string; thinking?: ThinkingLevel; steps?: SubagentStepMetadata[]; sessionFile?: string }
+  | { type: "background_agent_end"; agentId: string; agentType: string; success: boolean; cancelled: boolean; model?: string; thinking?: ThinkingLevel; steps?: SubagentStepMetadata[]; sessionFile?: string }
   | { type: "background_agent_event"; agentId: string; event: Record<string, unknown> }
   | { type: "parent_paused_for_background_agents"; runningAgentCount: number; turnsUsed: number; turnLimit: number }
   | { type: "session_name_changed"; name: string }
@@ -114,7 +114,8 @@ The event never contains the arbiter prompt, response, reasoning, guide, task, o
 
 Errors surface as events, not as broken JSON or exit codes:
 
-- **LLM failures** (rate limits, network errors) trigger `auto_retry_start` / `auto_retry_end` events. dreb retries automatically with backoff. If all retries fail, `auto_retry_end` has `success: false` and `finalError` set.
+- **LLM failures** (rate limits, network errors) trigger `auto_retry_start` / `auto_retry_end` events. dreb retries automatically with backoff. If all retries fail, or a retried request fails with an error that is not retried (such as a safety refusal), `auto_retry_end` has `success: false` and `finalError` set.
+- **Safety refusals** are not retried and do not trigger automatic compaction. The final assistant message has `stopReason: "error"`, an `errorMessage` starting with `Request declined by the model's safety filter`, and a `refusal` object with the provider's optional `category` and `explanation` (see [AssistantMessage in rpc.md](rpc.md#assistantmessage)).
 - **Tool execution errors** produce a `tool_execution_end` event with `isError: true` and the error message in `result`.
 - **Context overflow or a proactive threshold** triggers `auto_compaction_start` / `auto_compaction_end`. If compaction fails, `errorMessage` is set. `willRetry: true` means another model request is imminent, including continuation inside the same tool loop.
 
@@ -130,7 +131,7 @@ Events are emitted in a predictable sequence:
 
 `message_update` events stream as chunks arrive — expect many per message. `tool_execution_update` events are optional (only emitted for tools that report progress).
 
-Auto-compaction and auto-retry events can appear between turns. Background lifecycle events are asynchronous: `background_agent_start` is emitted immediately, then an enabled `subagent_arbitration` record appears before that child's first `background_agent_event`; a failed arbitration is followed by `background_agent_end` without any child event.
+Auto-compaction and auto-retry events can appear between turns. Background lifecycle events are asynchronous: `background_agent_start` is emitted immediately, then an enabled `subagent_arbitration` record appears before that child's first `background_agent_event`; a failed arbitration is followed by `background_agent_end` without any child event. `background_agent_end.cancelled` is `true` when the user stopped the agent (then `success` is `false`).
 
 ## Example
 

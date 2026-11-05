@@ -43,7 +43,7 @@ What you get in exchange: a skill system, an extension API, custom agent definit
 
 ## Quick Start
 
-> **Node.js 22 LTS is required.** dreb relies on SSE streaming behavior that is stable in Node 22 LTS. Node 24 and Node 26 are known to break provider streaming due to changes in ReadableStream buffering, which causes every provider to fail with **"request ended without sending any chunks"**. If you see that error, switch to Node 22 LTS.
+> **Node.js 26 LTS is required** (`^26.13.0`). Source builds enforce it: npm refuses to install or run scripts on any other Node or npm major (`EBADDEVENGINES`). With [nvm](https://github.com/nvm-sh/nvm), run `nvm install` in the cloned repo to get the exact version the project builds and tests with (`.nvmrc`).
 
 ### Building from source (recommended)
 
@@ -93,7 +93,7 @@ Dashboard theme cards keep IBM Plex Mono for Theme default previews, while the f
 
 ### Troubleshooting
 
-- **"request ended without sending any chunks" on every provider** — Your Node version is likely too new. Switch to **Node.js 22 LTS**. Node 26 in particular changed ReadableStream buffering in a way that breaks the Anthropic and OpenAI SDK stream parsers dreb uses.
+- **`EBADDEVENGINES` from `npm install` or `npm run` in a source checkout** — Your Node or npm is not the project toolchain. Switch to Node.js 26 LTS and its bundled npm (`nvm install` in the repo reads `.nvmrc`).
 
 ---
 
@@ -135,7 +135,7 @@ See [docs/providers.md](docs/providers.md) for detailed setup instructions, incl
 
 **Custom providers & models:** Add providers via `~/.dreb/agent/models.json` if they speak a supported API (OpenAI, Anthropic, Google), including Bearer-only Anthropic-compatible endpoints. For custom APIs or OAuth, use extensions. See [docs/models.md](docs/models.md) and [docs/custom-provider.md](docs/custom-provider.md).
 
-**Output limits and retries:** `maxTokens` is the ordinary request maximum, including model overrides; explicit bounded internal calls may use less. Responses truncated at the model's configured output limit retry at that same limit. After exhaustion, genuine output-budget failures fail loudly, while possible full-context truncation enters one compact-and-retry recovery. The ChatGPT-backed `openai-codex` protocol rejects client-supplied output limits, so its built-in maximum remains server-controlled and dreb rejects `maxTokens` overrides for that provider.
+**Output limits and retries:** `maxTokens` is the ordinary request maximum, including model overrides; explicit bounded internal calls may use less. Responses truncated at the model's configured output limit retry at that same limit. After exhaustion, genuine output-budget failures fail loudly, while possible full-context truncation enters one compact-and-retry recovery. The ChatGPT-backed `openai-codex` protocol rejects client-supplied output limits, so its built-in maximum remains server-controlled and dreb rejects `maxTokens` overrides for that provider. Safety refusals fail with `Request declined by the model's safety filter` plus the provider's category and explanation when available (Anthropic `stop_details`), carry a structured `refusal` field for RPC/SDK consumers, and are never retried automatically; rephrase, rewind, or switch models to continue.
 
 **Reasoning across model switches:** Exact-model signed, encrypted, or redacted reasoning state is replayed unchanged. Structured reasoning is portable only between models that share a provider and the `openai-completions` API when the destination accepts the source's recognized plain field (`reasoning_content`, `reasoning`, or `reasoning_text`). Other readable reasoning is retained as labelled plaintext in `<reformatted-pre-switch-reasoning>` markers with incompatible protocol metadata removed; opaque redacted or encrypted-only state is omitted for incompatible targets. This outbound conversion does not change session history, so switching back can replay the original state unless it was compacted or pruned. Custom models must also share provider identity and compatible API/signature behavior.
 
@@ -400,7 +400,7 @@ Task tracking is prompt-driven: the system prompt includes guidelines for when t
 
 ## Subagents
 
-The optional `subagent` tool runs focused, role-matched work in independent child agent processes. Each subagent runs in its own process with its own context window, and notifies the parent when complete. In the dashboard, a live child's transcript view can accept the user's own steering messages directly; repeated messages use that child's configured one-at-a-time or all-at-once steering queue. Completed and rehydrated transcripts remain read-only.
+The optional `subagent` tool runs focused, role-matched work in independent child agent processes. Each subagent runs in its own process with its own context window, and notifies the parent when complete. In that notification the child's own output sits between `--- agent output ---` and `--- end of agent output ---` lines (`--- agent output (partial) ---` when the child was cancelled or failed). System lines such as execution metadata, warnings, errors, and the session log stay outside those lines. A chain delimits each step's output. In the dashboard, a live child's transcript view can accept the user's own steering messages directly; repeated messages use that child's configured one-at-a-time or all-at-once steering queue. Its ■ stop cancels just that child — the parent and other subagents keep running, and the parent gets a cancellation notice (with any partial output) without being woken. Esc in the TUI (or the parent's stop) cancels all running subagents. Stops are graceful: the child aborts its own run first, so running tools such as a hung bash command are killed rather than orphaned. Completed, cancelled, and rehydrated transcripts remain read-only.
 
 When `agent` is omitted, dreb selects the default `Explore` agent. Explore retrieves concrete, bounded evidence: files, symbols, documentation, call sites, exact snippets, tests for a named behavior, and explicitly named data flows. The primary agent must synthesize that evidence and owns root-cause diagnosis, ambiguous-requirement interpretation, architecture/design decisions, implementation recommendations, planning, and final conclusions.
 
@@ -421,7 +421,7 @@ Set `backgroundAgents.maxConcurrentSubagents` in `/settings`, dashboard Settings
 
 **Per-agent model overrides:** The model used by each agent type can be overridden via the `agentModels.models` setting (a map of agent name → ordered fallback list) without copying or editing the agent definition `.md` files. Configure it in `settings.json` or via `/settings` → **Agent Models**. Resolution order: per-invocation `model` override → `agentModels` setting → agent definition `model` → parent session model. See [docs/agent-models.md](docs/agent-models.md).
 
-**Single model mode:** The `singleModelMode` setting (default `false`) forces every subagent to run on the parent session's model. When enabled, per-invocation `model` overrides, `agentModels` fallback lists, agent-definition models, spawn-time probes, and the dispatch arbiter are all bypassed, and any requested model selection — even one identical to the parent's — is reported to the parent by prepending a `[WARNING: ...]` note to the child's output. If nothing requested a model, no warning appears. If the parent session has no model, the spawn fails loudly. Configure it in the TUI (`/settings`), dashboard Settings, or `settings.json`. See [docs/agent-models.md](docs/agent-models.md#single-model-mode).
+**Single model mode:** The `singleModelMode` setting (default `false`) forces every subagent to run on the parent session's model. When enabled, per-invocation `model` overrides, `agentModels` fallback lists, agent-definition models, spawn-time probes, and the dispatch arbiter are all bypassed, and any requested model selection — even one identical to the parent's — is reported to the parent as a `[WARNING: ...]` note just before the child's output. If nothing requested a model, no warning appears. If the parent session has no model, the spawn fails loudly. Configure it in the TUI (`/settings`), dashboard Settings, or `settings.json`. See [docs/agent-models.md](docs/agent-models.md#single-model-mode).
 
 **Optional Dispatch Arbiter:** A global-only `subagentArbiter` setting can enable a fully headless, direct model call after the proposal above resolves but before each child process spawns. It uses the validated routing guide, live explicit model scope, and bounded title-setter-style parent activity including useful tool outputs; existing secret scrubbing applies before inference. It may change only the existing agent type, exact scoped provider/model, and supported thinking level. It has no tools, cannot rewrite the task/cwd or agent definitions, and fails closed on configuration, guide, scope, inference, output, or validation errors. It runs once per single/parallel child and after `{previous}` substitution for every chain step. Interactive `/settings` and dashboard Settings both expose enable/disable, exact model selection, thinking, guide path, and loud readiness/validation feedback. Safe typed changed/unchanged/failure records are persisted outside parent model context and relayed to the TUI, JSON/RPC, and dashboard. See [Dispatch Arbiter](docs/agent-models.md#dispatch-arbiter) and [settings](docs/settings.md#dispatch-arbiter).
 
@@ -456,7 +456,7 @@ The `search` tool provides natural language queries over the codebase using embe
 
 **Storage:** Project index at `.dreb/index/`, memory files indexed alongside code. Add `**/.dreb/` to your project's `.gitignore`. Works offline after the initial model download.
 
-**Requirements:** Node.js 22+ (uses built-in `node:sqlite`). On older Node versions the tool is silently unavailable — no crash, it simply doesn't register. Zero native addons — uses `web-tree-sitter` (WASM) and `@huggingface/transformers` (WASM).
+**Requirements:** Node.js 26 LTS, like the rest of dreb (the index uses the built-in `node:sqlite` module; if a runtime lacks it, the tool simply doesn't register). Code chunking uses `web-tree-sitter` (WASM); embeddings run through `@huggingface/transformers` on the prebuilt native `onnxruntime-node` binding shipped in its package — nothing is compiled at install time.
 
 ---
 

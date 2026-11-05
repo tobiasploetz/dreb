@@ -1,9 +1,8 @@
-// @vitest-environment jsdom
-
 import { EventEmitter } from "node:events";
 import type { Server } from "node:http";
 import type { RpcClient } from "@dreb/coding-agent/rpc";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { JSDOM } from "jsdom";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createAppStore } from "../../src/client/state/store.js";
 import { DashboardAuth } from "../../src/server/auth.js";
 import { RuntimePool } from "../../src/server/runtime-pool.js";
@@ -105,6 +104,20 @@ const servers: Server[] = [];
 const pools: RuntimePool[] = [];
 const originalFetch = globalThis.fetch;
 const originalEventSource = globalThis.EventSource;
+
+// Run the real HTTP server in Node while giving the client store a DOM.
+// A jsdom test environment applies browser transforms to the agent SDK.
+let dom: JSDOM;
+beforeAll(() => {
+	dom = new JSDOM("", { url: "http://localhost/" });
+	vi.stubGlobal("window", dom.window);
+	vi.stubGlobal("document", dom.window.document);
+});
+
+afterAll(() => {
+	dom.window.close();
+	vi.unstubAllGlobals();
+});
 
 afterEach(async () => {
 	globalThis.fetch = originalFetch;
