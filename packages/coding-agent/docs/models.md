@@ -9,6 +9,7 @@ Add custom providers and models (Ollama, vLLM, LM Studio, proxies) via `~/.dreb/
 - [Supported APIs](#supported-apis)
 - [Provider Configuration](#provider-configuration)
 - [Model Configuration](#model-configuration)
+- [Thinking Capability](#thinking-capability)
 - [Overriding Built-in Providers](#overriding-built-in-providers)
 - [Per-model Overrides](#per-model-overrides)
 - [Reasoning Across Model Switches](#reasoning-across-model-switches)
@@ -198,6 +199,7 @@ Leave `authHeader` unset or `false` for endpoints that expect `x-api-key`.
 | `name` | No | `id` | Human-readable model label. Used for matching (`--model` patterns) and shown in model details/status text. |
 | `api` | No | provider's `api` | Override provider's API for this model |
 | `reasoning` | No | `false` | Supports extended thinking |
+| `thinking` | No | inferred | Declared thinking capability: which tiers the model offers, how thinking is turned off, and how tiers are encoded on the wire. See [Thinking Capability](#thinking-capability). |
 | `input` | No | `["text"]` | Input types: `["text"]` or `["text", "image"]` |
 | `contextWindow` | No | `128000` | Context window size in tokens |
 | `maxTokens` | No | `16384` | Ordinary request maximum output tokens, including per-model overrides; explicit bounded internal calls may use less |
@@ -227,6 +229,64 @@ loader remains stronger than a model's `systemPrompt`. `appendSystemPrompt` foll
 selected base and existing session append sources. Switching, cycling, or restoring a model
 rebuilds the prompt immediately; `/reload` picks up prompt edits and removals from either
 configuration file.
+
+## Thinking Capability
+
+dreb adapts a fixed scale of thinking tiers — `minimal`, `low`, `medium`, `high`, `xhigh`,
+`max` — plus `off` to each model. For built-in models this is inferred from the model id and
+API. A custom model, or a built-in model behind a gateway that knows better, can declare the
+capability explicitly instead:
+
+```json
+{
+  "providers": {
+    "local-gateway": {
+      "baseUrl": "http://127.0.0.1:18080",
+      "apiKey": "LOCAL_KEY",
+      "api": "anthropic-messages",
+      "modelOverrides": {
+        "deepseek-v4.1-flash": {
+          "thinking": {
+            "levels": ["minimal", "low", "medium", "high", "xhigh", "max"],
+            "off": "disabled",
+            "encoding": { "kind": "effort", "field": "output_config.effort" }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `levels` | inferred | Tiers the model offers. `off` is not a tier; use `off` below. Order is normalised to ascending and duplicates/unknown values are dropped. |
+| `off` | inferred | How a request disables thinking: `disabled`, `between_tools`, or `omit` (thinking cannot be turned off; `off` is hidden from the selector and clamps to `minimal`). |
+| `encoding.kind` | inferred | Wire shape: `effort` (graded effort field), `budget` (token budget), `toggle` (on/off flag), or `adaptive` (provider decides). |
+| `encoding.field` | — | Request field carrying the tier or budget. |
+| `encoding.map` | identity | Tier → provider-specific value, for endpoints whose effort names differ. |
+| `encoding.budgets` | — | Tier → token budget, for `budget` encoding. |
+
+Resolution is layered: declared data wins, missing parts fall back to inference from the model
+id and API, and a conservative default covers anything unknown. Declared tiers are validated
+when `models.json` loads — unknown tiers or encoding kinds fail the schema, duplicate tiers and
+`thinking` on a model with `reasoning: false` are rejected with an error naming the provider and
+model.
+
+`thinking` is accepted both on custom models under `models` and per built-in model under
+`modelOverrides`. For overrides, `levels` replaces the inferred set wholesale while `off` and
+the individual `encoding` fields merge, so you can adjust one part without restating the rest:
+
+```json
+{ "providers": { "anthropic": { "modelOverrides": {
+  "claude-opus-4-6": { "thinking": { "off": "between_tools" } }
+} } } }
+```
+
+Only `encoding.kind === "adaptive"` (and `off`) affect request construction today; the remaining
+encoding fields are the declared contract that provider request building adopts next. Declaring
+tiers a transport cannot yet express therefore lets you select them, but does not change the
+request until that work lands.
 
 ## Overriding Built-in Providers
 
@@ -289,7 +349,7 @@ Use `modelOverrides` to customize specific built-in models without replacing the
 }
 ```
 
-`modelOverrides` supports these fields per model: `name`, `reasoning`, `input`, `cost` (partial), `contextWindow`, `maxTokens`, `headers`, `compat`, `systemPrompt`, `appendSystemPrompt`. The ChatGPT-backed `openai-codex` protocol rejects `max_output_tokens`, so dreb rejects `maxTokens` overrides for that provider rather than silently ignoring them; its built-in model ceiling remains server-controlled.
+`modelOverrides` supports these fields per model: `name`, `reasoning`, `thinking`, `input`, `cost` (partial), `contextWindow`, `maxTokens`, `headers`, `compat`, `systemPrompt`, `appendSystemPrompt`. The ChatGPT-backed `openai-codex` protocol rejects `max_output_tokens`, so dreb rejects `maxTokens` overrides for that provider rather than silently ignoring them; its built-in model ceiling remains server-controlled.
 
 Prompt fields follow the same rules as custom model entries: choose replacement or append,
 not both; use a non-empty string; and do not also configure prompt behavior for the canonical
@@ -346,7 +406,7 @@ For providers with partial OpenAI compatibility, use the `compat` field.
 | `openRouterRouting` | OpenRouter routing config passed to OpenRouter for model/provider selection |
 | `vercelGatewayRouting` | Vercel AI Gateway routing config for provider selection (`only`, `order`) |
 
-The normalized scale is `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (`off` disables reasoning at the session layer). Native normalized `max` is model-aware and currently supported by GPT-5.6 aliases and Sol/Terra/Luna variants, the GPT-6 family (Astra and future variants), and Claude Opus/Sonnet 4.6+ and Haiku 5.5 on Anthropic-native transports (`anthropic-messages`, including GitHub Copilot, and Bedrock); unsupported defaults fall back `max` → `xhigh` → `high`, and an unsupported `xhigh` falls back to `max` where the model has it (Claude Opus/Sonnet 4.6), otherwise `high`. On Anthropic-native transports Claude `xhigh` and `max` are sent as Anthropic's native efforts of the same name. Capability detection is by model id, so custom `models.json` Claude entries (including `anthropic/claude-*` ids on an Anthropic-compatible endpoint) get the same behavior. When reasoning is off, dreb sends each Claude model's own off config: `thinking: {type: "disabled"}` for most models, `{type: "between_tools"}` for Sonnet 5.5, and no `thinking` field or effort for Opus 5.5 (its thinking cannot be turned off, so the session offers `minimal` as its lowest level). Codex `ultra` also enables local multi-agent orchestration and is therefore not a raw effort value.
+The normalized scale is `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` (`off` disables reasoning at the session layer). Native normalized `max` is model-aware and currently supported by GPT-5.6 aliases and Sol/Terra/Luna variants, the GPT-6 family (Astra and future variants), and Claude Opus/Sonnet 4.6+ and Haiku 5.5 on Anthropic-native transports (`anthropic-messages`, including GitHub Copilot, and Bedrock); unsupported defaults fall back `max` → `xhigh` → `high`, and an unsupported `xhigh` falls back to `max` where the model has it (Claude Opus/Sonnet 4.6), otherwise `high`. On Anthropic-native transports Claude `xhigh` and `max` are sent as Anthropic's native efforts of the same name. Capability detection infers from the model id, so custom `models.json` Claude entries (including `anthropic/claude-*` ids on an Anthropic-compatible endpoint) get the same behavior; a declared [`thinking`](#thinking-capability) capability takes precedence over that inference for any model. When reasoning is off, dreb sends each Claude model's own off config: `thinking: {type: "disabled"}` for most models, `{type: "between_tools"}` for Sonnet 5.5, and no `thinking` field or effort for Opus 5.5 (its thinking cannot be turned off, so the session offers `minimal` as its lowest level). Codex `ultra` also enables local multi-agent orchestration and is therefore not a raw effort value.
 
 `qwen` uses top-level `enable_thinking`. Use `qwen-chat-template` for local Qwen-compatible servers that require `chat_template_kwargs.enable_thinking`. When reasoning is enabled, dreb sends the mapped effort as a top-level `reasoning_effort`; Qwen3.8+ models default-map dreb's levels onto the three native tiers (`minimal`/`low` → `low`, `medium` → `medium`, `high`/`xhigh`/`max` → `xhigh`).
 

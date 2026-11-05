@@ -8,6 +8,7 @@ import {
 	type Context,
 	getModels,
 	getProviders,
+	getThinkingCapability,
 	type KnownProvider,
 	type Model,
 	type OAuthProviderInterface,
@@ -16,6 +17,7 @@ import {
 	registerApiProvider,
 	resetApiProviders,
 	type SimpleStreamOptions,
+	type ThinkingCapability,
 } from "@dreb/ai";
 import { registerOAuthProvider, resetOAuthProviders } from "@dreb/ai/oauth";
 import { type Static, Type } from "@sinclair/typebox";
@@ -82,6 +84,30 @@ const OpenAIResponsesCompatSchema = Type.Object({
 
 const OpenAICompatSchema = Type.Union([OpenAICompletionsCompatSchema, OpenAIResponsesCompatSchema]);
 
+// Schema for declared thinking capability. Every field is optional so an override can
+// adjust one part (e.g. just the `off` mode) and inherit the rest from inference.
+const ThinkingLevelSchema = Type.Union([
+	Type.Literal("minimal"),
+	Type.Literal("low"),
+	Type.Literal("medium"),
+	Type.Literal("high"),
+	Type.Literal("xhigh"),
+	Type.Literal("max"),
+]);
+
+const ThinkingEncodingSchema = Type.Object({
+	kind: Type.Union([Type.Literal("effort"), Type.Literal("budget"), Type.Literal("toggle"), Type.Literal("adaptive")]),
+	field: Type.Optional(Type.String({ minLength: 1 })),
+	map: Type.Optional(Type.Record(Type.String(), Type.String())),
+	budgets: Type.Optional(Type.Record(Type.String(), Type.Number())),
+});
+
+const ThinkingCapabilitySchema = Type.Object({
+	levels: Type.Optional(Type.Array(ThinkingLevelSchema)),
+	off: Type.Optional(Type.Union([Type.Literal("disabled"), Type.Literal("between_tools"), Type.Literal("omit")])),
+	encoding: Type.Optional(ThinkingEncodingSchema),
+});
+
 // Schema for custom model definition
 // Most fields are optional with sensible defaults for local models (Ollama, LM Studio, etc.)
 const ModelDefinitionSchema = Type.Object({
@@ -90,6 +116,7 @@ const ModelDefinitionSchema = Type.Object({
 	api: Type.Optional(Type.String({ minLength: 1 })),
 	baseUrl: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
+	thinking: Type.Optional(ThinkingCapabilitySchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(
 		Type.Object({
@@ -111,6 +138,7 @@ const ModelDefinitionSchema = Type.Object({
 const ModelOverrideSchema = Type.Object({
 	name: Type.Optional(Type.String({ minLength: 1 })),
 	reasoning: Type.Optional(Type.Boolean()),
+	thinking: Type.Optional(ThinkingCapabilitySchema),
 	input: Type.Optional(Type.Array(Type.Union([Type.Literal("text"), Type.Literal("image")]))),
 	cost: Type.Optional(
 		Type.Object({
@@ -162,6 +190,30 @@ function validateModelPromptSettings(settings: ModelPromptSettings, modelRef: st
 	}
 	if (systemPrompt !== undefined && appendSystemPrompt !== undefined) {
 		throw new Error(`models.json entry ${modelRef} cannot define both systemPrompt and appendSystemPrompt`);
+	}
+}
+
+/**
+ * Validate a declared thinking capability: it only makes sense on a reasoning model, and
+ * its tiers must be distinct. Tier order is not an error — `getThinkingCapability`
+ * normalises it to ascending order.
+ */
+function validateThinkingCapability(
+	providerName: string,
+	modelId: string,
+	thinking: Static<typeof ThinkingCapabilitySchema> | undefined,
+	reasoning: boolean,
+): void {
+	if (!thinking) return;
+	const where = `Provider ${providerName}, model ${modelId}`;
+	if (!reasoning) {
+		throw new Error(
+			`${where}: "thinking" cannot be declared for a non-reasoning model. Set "reasoning": true or remove "thinking".`,
+		);
+	}
+	const levels = thinking.levels;
+	if (levels && new Set(levels).size !== levels.length) {
+		throw new Error(`${where}: "thinking.levels" must not contain duplicates.`);
 	}
 }
 
@@ -320,7 +372,38 @@ function applyModelOverride(model: Model<Api>, override: ModelOverride): Model<A
 	// Deep merge compat
 	result.compat = mergeCompat(model.compat, override.compat);
 
+	// Merge declared thinking capability over the resolved one, so an override can adjust
+	// a single part (e.g. only `off`) without restating the whole capability.
+	if (override.thinking) {
+		result.thinking = mergeThinkingCapability(model, override.thinking);
+	}
+
 	return result;
+}
+
+/**
+ * Merge a `models.json` thinking declaration over a model's current capability.
+ *
+ * `levels` replaces wholesale when present (it is a complete set, not a patch); `off`
+ * and the individual `encoding` fields merge. The result is normalised on read by
+ * `getThinkingCapability`, so an incomplete declaration is safe.
+ */
+function mergeThinkingCapability(
+	model: Model<Api>,
+	declared: Static<typeof ThinkingCapabilitySchema>,
+): ThinkingCapability {
+	// getThinkingCapability normalises any existing (possibly partial) declaration over inference.
+	const base = getThinkingCapability(model);
+	const levels = (declared.levels ?? base.levels) as ThinkingCapability["levels"];
+	const encoding = {
+		...base.encoding,
+		...(declared.encoding as Partial<ThinkingCapability["encoding"]> | undefined),
+	};
+	return {
+		levels,
+		off: declared.off ?? base.off,
+		encoding,
+	};
 }
 
 /** Clear the config value command cache. Exported for testing. */
@@ -583,12 +666,20 @@ export class ModelRegistry {
 
 			for (const [modelId, modelOverride] of Object.entries(providerConfig.modelOverrides ?? {})) {
 				validateModelPromptSettings(modelOverride, `${providerName}/${modelId}`);
-				const api = providerConfig.api ?? builtInModels.find((model) => model.id === modelId)?.api;
+				const builtIn = builtInModels.find((model) => model.id === modelId);
+				const api = providerConfig.api ?? builtIn?.api;
 				validateCodexMaxTokens(providerName, modelId, api, modelOverride.maxTokens);
+				validateThinkingCapability(
+					providerName,
+					modelId,
+					modelOverride.thinking,
+					modelOverride.reasoning ?? builtIn?.reasoning ?? false,
+				);
 			}
 
 			for (const modelDef of models) {
 				validateModelPromptSettings(modelDef, `${providerName}/${modelDef.id}`);
+				validateThinkingCapability(providerName, modelDef.id, modelDef.thinking, modelDef.reasoning ?? false);
 				const hasModelApi = !!modelDef.api;
 				const api = modelDef.api ?? providerConfig.api;
 				validateCodexMaxTokens(providerName, modelDef.id, api, modelDef.maxTokens);
@@ -643,6 +734,7 @@ export class ModelRegistry {
 					provider: providerName,
 					baseUrl: modelDef.baseUrl ?? providerConfig.baseUrl!,
 					reasoning: modelDef.reasoning ?? false,
+					thinking: modelDef.thinking as ThinkingCapability | undefined,
 					input: (modelDef.input ?? ["text"]) as ("text" | "image")[],
 					cost: modelDef.cost ?? defaultCost,
 					contextWindow: modelDef.contextWindow ?? 128000,
@@ -809,6 +901,7 @@ export class ModelRegistry {
 					provider: providerName,
 					baseUrl: config.baseUrl!,
 					reasoning: modelDef.reasoning,
+					thinking: modelDef.thinking,
 					input: modelDef.input as ("text" | "image")[],
 					cost: modelDef.cost,
 					contextWindow: modelDef.contextWindow,
@@ -871,5 +964,7 @@ export interface ProviderConfigInput {
 		maxTokens: number;
 		headers?: Record<string, string>;
 		compat?: Model<Api>["compat"];
+		/** Declared thinking capability; inferred from the model id when omitted. */
+		thinking?: ThinkingCapability;
 	}>;
 }

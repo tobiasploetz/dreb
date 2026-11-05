@@ -52,6 +52,70 @@ export interface ThinkingBudgets {
 	high?: number;
 }
 
+/** Every thinking tier, in ascending order. `"off"` is a session concern, not a tier. */
+export const THINKING_TIERS: readonly ThinkingLevel[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** How a provider expresses a thinking tier on the wire. */
+export type ThinkingEncodingKind = "effort" | "budget" | "toggle" | "adaptive";
+
+/** Every {@link ThinkingEncodingKind}, for validation and normalisation. */
+export const THINKING_ENCODING_KINDS: readonly ThinkingEncodingKind[] = ["effort", "budget", "toggle", "adaptive"];
+
+/**
+ * Request encoding for a model's thinking tiers.
+ *
+ * Only `kind` is consumed today; the remaining fields are the declared shape that the
+ * provider work (follow-up) reads, so `models.json` entries do not need to change again.
+ */
+export interface ThinkingEncoding {
+	/**
+	 * - `effort`: a graded effort field (`reasoning_effort`, `output_config.effort`, ...)
+	 * - `budget`: a token budget field (`thinking.budget_tokens`, ...)
+	 * - `toggle`: an on/off flag (`enable_thinking`) with no graded tiers
+	 * - `adaptive`: the provider decides depth; `field` names the optional effort override
+	 */
+	kind: ThinkingEncodingKind;
+	/** Request field that carries the tier (effort) or budget. */
+	field?: string;
+	/** Effort: dreb tier → provider-specific value. Absent means identity. */
+	map?: Partial<Record<ThinkingLevel, string>>;
+	/** Budget: tokens per tier. Absent tiers are derived from the highest defined tier. */
+	budgets?: Partial<Record<ThinkingLevel, number>>;
+}
+
+/** How a request turns thinking off. `"omit"` means the model cannot disable it. */
+export type ThinkingOffMode = "disabled" | "between_tools" | "omit";
+
+/** Every {@link ThinkingOffMode}, for validation and normalisation. */
+export const THINKING_OFF_MODES: readonly ThinkingOffMode[] = ["disabled", "between_tools", "omit"];
+
+/**
+ * Declarative thinking support for a model: which tiers exist, how to disable thinking,
+ * and how the tiers are expressed on the wire.
+ *
+ * Registered models carry this resolved form (see `getThinkingCapability` in
+ * `models.ts`, which normalises and fills in inferred values). `models.json` and SDK
+ * construction may supply any subset; missing parts are inferred.
+ */
+export interface ThinkingCapability {
+	/** Supported tiers, ascending. Empty for non-reasoning models. */
+	levels: ThinkingLevel[];
+	/** How thinking is turned off; also decides whether `"off"` is a selectable level. */
+	off: ThinkingOffMode;
+	/** Wire encoding for the tiers. */
+	encoding: ThinkingEncoding;
+}
+
+/**
+ * The subset form accepted from `models.json` and SDK construction: every part is
+ * optional and unspecified parts are filled in from inference.
+ */
+export interface ThinkingCapabilityDeclaration {
+	levels?: ThinkingLevel[];
+	off?: ThinkingOffMode;
+	encoding?: Partial<ThinkingEncoding>;
+}
+
 // Base options all providers share
 export type CacheRetention = "none" | "short" | "long";
 
@@ -373,6 +437,12 @@ export interface Model<TApi extends Api> {
 	wireModelId?: string;
 	/** Explicit auth transport. When unset, the provider's default and token heuristics apply. */
 	authMode?: AuthMode;
+	/**
+	 * Declared thinking support, which may be partial. When unset, capability is inferred
+	 * from the model id and API (the legacy heuristics). Read it through
+	 * `getThinkingCapability()` so partial declarations are normalised consistently.
+	 */
+	thinking?: ThinkingCapabilityDeclaration;
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat

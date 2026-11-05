@@ -1,5 +1,18 @@
 import { MODELS } from "./models.generated.js";
-import type { Api, KnownProvider, Model, ThinkingLevel, Usage } from "./types.js";
+import {
+	type Api,
+	type KnownProvider,
+	type Model,
+	THINKING_ENCODING_KINDS,
+	THINKING_OFF_MODES,
+	THINKING_TIERS,
+	type ThinkingCapability,
+	type ThinkingCapabilityDeclaration,
+	type ThinkingEncodingKind,
+	type ThinkingLevel,
+	type ThinkingOffMode,
+	type Usage,
+} from "./types.js";
 
 const modelRegistry: Map<string, Map<string, Model<Api>>> = new Map();
 
@@ -210,15 +223,18 @@ export function isQwen38OrLater(modelId: string): boolean {
 }
 
 /**
- * Check if a model supports the native `max` reasoning tier.
+ * Legacy heuristic: does this model id belong to a family with a native `max` tier?
  *
  * Supported today:
  * - GPT-5.6 model families (Sol, Terra, Luna, and the alias)
  * - GPT-6 model families (Astra and future variants)
  * - On Anthropic-native transports (Anthropic Messages, including GitHub Copilot, and
  *   Bedrock): Claude Opus/Sonnet 4.6+ (including the Claude 5 families) and Haiku 5.5+
+ *
+ * This is the inference fallback used when a model carries no declared
+ * {@link ThinkingCapability}. Prefer `getThinkingCapability(model)`.
  */
-export function supportsMax<TApi extends Api>(model: Model<TApi>): boolean {
+function infersMax<TApi extends Api>(model: Model<TApi>): boolean {
 	const id = model.id.toLowerCase();
 	// Anchored to the id start or a gateway "/" prefix so unrelated ids
 	// (e.g. "gpt-60") do not match.
@@ -231,7 +247,7 @@ export function supportsMax<TApi extends Api>(model: Model<TApi>): boolean {
 }
 
 /**
- * Check if a model supports xhigh thinking level.
+ * Legacy heuristic: does this model id belong to a family with a native `xhigh` tier?
  *
  * Supported today:
  * - GPT-5.2 through GPT-5.6 model families
@@ -243,7 +259,7 @@ export function supportsMax<TApi extends Api>(model: Model<TApi>): boolean {
  * - Kimi Code K3 (xhigh maps to its advertised "max" effort)
  * - Qwen 3.8+ model families (xhigh is their top native effort tier)
  */
-export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
+function infersXhigh<TApi extends Api>(model: Model<TApi>): boolean {
 	if (model.provider === "kimi-coding-oauth" && model.id === "k3") return true;
 	if (isQwen38OrLater(model.id)) return true;
 	if (/gpt-(?:5\.[2-6]|6)/.test(model.id)) return true;
@@ -262,15 +278,152 @@ export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
 }
 
 /**
+ * Legacy heuristic: does this model use adaptive thinking (Opus/Sonnet 4.6+, Haiku 5+,
+ * including the Claude 5 families), where `output_config.effort` and the
+ * `thinkingDisplay` option are honored?
+ *
+ * Adaptive thinking is a property of the Claude family, not of the transport, so this
+ * deliberately ignores `model.api` (a Claude id behind an OpenAI-compatible proxy still
+ * answers true; those providers ignore the display option).
+ */
+function infersAdaptive<TApi extends Api>(model: Model<TApi>): boolean {
+	const claude = claudeFamilyVersion(model.id);
+	if (!claude) return false;
+	if (claude.family === "haiku") return claudeAtLeast(claude, 5);
+	return claudeAtLeast(claude, 4, 6);
+}
+
+/**
+ * Legacy heuristic: the request shape that turns thinking off on an Anthropic-native
+ * transport:
+ * - `"omit"`: send neither a `thinking` field nor an effort (Opus 5.5+, where thinking
+ *   cannot be disabled; the model default effort applies)
+ * - `"between_tools"`: `thinking: {type: "between_tools"}` (Sonnet 5.5+, where
+ *   `disabled` is rejected)
+ * - `"disabled"`: `thinking: {type: "disabled"}` (every other model, and every model on
+ *   non-native transports)
+ */
+function infersOffMode<TApi extends Api>(model: Model<TApi>): ThinkingOffMode {
+	const claude = nativeClaude(model);
+	if (!claude) return "disabled";
+	if (claude.family === "opus" && claudeAtLeast(claude, 5, 5)) return "omit";
+	if (claude.family === "sonnet" && claudeAtLeast(claude, 5, 5)) return "between_tools";
+	return "disabled";
+}
+
+/**
+ * Legacy heuristic: the wire shape this model's API uses for thinking.
+ *
+ * Adaptive Claude gets its own encoding; everything else is approximated from the API
+ * (Anthropic Messages and Bedrock are budget-based, the OpenAI-shaped and Google APIs
+ * take graded effort). Providers adopt this encoding in a follow-up; today only
+ * `"adaptive"` is consumed, by {@link supportsAdaptiveThinking}.
+ */
+function infersEncodingKind<TApi extends Api>(model: Model<TApi>): ThinkingEncodingKind {
+	if (infersAdaptive(model)) return "adaptive";
+	if (!model.reasoning) return "toggle";
+	const api = model.api ?? "";
+	if (isAnthropicNativeTransport(model) || api.startsWith("google")) return "budget";
+	return "effort";
+}
+
+/**
+ * Infer thinking capability from a model id and API, with no declared data.
+ *
+ * This reproduces the behaviour of the per-family predicates exactly, so it is the
+ * compatibility path for models that carry no `thinking` declaration.
+ */
+export function inferThinkingCapability<TApi extends Api>(model: Model<TApi> | undefined): ThinkingCapability {
+	if (!model?.reasoning) {
+		return {
+			levels: [],
+			off: model ? infersOffMode(model) : "disabled",
+			// Adaptive is a property of the Claude family, not of the reasoning flag, so a
+			// model object carrying only an id still reports its family's encoding.
+			encoding: { kind: model ? infersEncodingKind(model) : "toggle" },
+		};
+	}
+
+	const levels: ThinkingLevel[] = ["minimal", "low", "medium", "high"];
+	if (infersXhigh(model)) levels.push("xhigh");
+	if (infersMax(model)) levels.push("max");
+
+	return {
+		levels,
+		off: infersOffMode(model),
+		encoding: { kind: infersEncodingKind(model) },
+	};
+}
+
+/**
+ * Normalise a declared capability against the inferred one.
+ *
+ * Missing parts fall back to inference; tiers are filtered to the known scale, deduped
+ * and sorted ascending; unknown `off`/`kind` values fall back to the inferred value.
+ * This keeps SDK-constructed models and hand-written `models.json` entries safe even
+ * when they bypass schema validation.
+ */
+function normalizeThinkingCapability<TApi extends Api>(
+	model: Model<TApi> | undefined,
+	declared: ThinkingCapabilityDeclaration | undefined,
+): ThinkingCapability {
+	const inferred = inferThinkingCapability(model);
+	if (!declared) return inferred;
+
+	const declaredLevels = declared.levels;
+	const levels = Array.isArray(declaredLevels)
+		? THINKING_TIERS.filter((tier) => declaredLevels.includes(tier))
+		: inferred.levels;
+
+	const off = declared.off && THINKING_OFF_MODES.includes(declared.off) ? declared.off : inferred.off;
+
+	const declaredEncoding = declared.encoding ?? {};
+	const kind =
+		declaredEncoding.kind && THINKING_ENCODING_KINDS.includes(declaredEncoding.kind)
+			? declaredEncoding.kind
+			: inferred.encoding.kind;
+
+	return { levels, off, encoding: { ...declaredEncoding, kind } };
+}
+
+/**
+ * Resolve a model's thinking capability: declared data wins, otherwise inference.
+ *
+ * This is the single source of truth for "which thinking levels does this model have,
+ * and how are they expressed". Every capability helper below derives from it.
+ */
+export function getThinkingCapability<TApi extends Api>(model: Model<TApi> | undefined): ThinkingCapability {
+	return normalizeThinkingCapability(model, model?.thinking);
+}
+
+/**
+ * Check if a model supports the native `max` reasoning tier.
+ *
+ * True when `max` is among the model's resolved {@link ThinkingCapability.levels}, i.e.
+ * for the families in {@link infersMax} and for any model that declares it in
+ * `models.json`.
+ */
+export function supportsMax<TApi extends Api>(model: Model<TApi>): boolean {
+	return getThinkingCapability(model).levels.includes("max");
+}
+
+/**
+ * Check if a model supports xhigh thinking level.
+ *
+ * True when `xhigh` is among the model's resolved {@link ThinkingCapability.levels}, i.e.
+ * for the families in {@link infersXhigh} and for any model that declares it.
+ */
+export function supportsXhigh<TApi extends Api>(model: Model<TApi>): boolean {
+	return getThinkingCapability(model).levels.includes("xhigh");
+}
+
+/**
  * Check if a model uses adaptive thinking (Opus/Sonnet 4.6+, Haiku 5+, including the
  * Claude 5 families), where `output_config.effort` and the `thinkingDisplay` option
  * are honored. Mirrors the per-provider internal checks.
  */
 export function supportsAdaptiveThinking<TApi extends Api>(model: Model<TApi>): boolean {
-	const claude = claudeFamilyVersion(model.id);
-	if (!claude) return false;
-	if (claude.family === "haiku") return claudeAtLeast(claude, 5);
-	return claudeAtLeast(claude, 4, 6);
+	return getThinkingCapability(model).encoding.kind === "adaptive";
 }
 
 /**
@@ -282,27 +435,19 @@ export function supportsAdaptiveThinking<TApi extends Api>(model: Model<TApi>): 
  * maps a requested `off` to `minimal`.
  */
 export function supportsThinkingOff<TApi extends Api>(model: Model<TApi>): boolean {
-	return getClaudeThinkingOffMode(model) !== "omit";
+	return getThinkingCapability(model).off !== "omit";
 }
 
-/** How a request turns Claude thinking off on an Anthropic-native transport. */
-export type ClaudeThinkingOffMode = "disabled" | "between_tools" | "omit";
+/** @deprecated Use {@link ThinkingOffMode} from `./types.js`. */
+export type ClaudeThinkingOffMode = ThinkingOffMode;
 
 /**
- * Select the request shape that turns thinking off for a Claude model:
- * - `"omit"`: send neither a `thinking` field nor an effort (Opus 5.5+, where thinking
- *   cannot be disabled; the model default effort applies)
- * - `"between_tools"`: `thinking: {type: "between_tools"}` (Sonnet 5.5+, where
- *   `disabled` is rejected)
- * - `"disabled"`: `thinking: {type: "disabled"}` (every other model, and every model on
- *   non-native transports)
+ * Select the request shape that turns thinking off for a model.
+ *
+ * @see {@link ThinkingOffMode}
  */
-export function getClaudeThinkingOffMode<TApi extends Api>(model: Model<TApi>): ClaudeThinkingOffMode {
-	const claude = nativeClaude(model);
-	if (!claude) return "disabled";
-	if (claude.family === "opus" && claudeAtLeast(claude, 5, 5)) return "omit";
-	if (claude.family === "sonnet" && claudeAtLeast(claude, 5, 5)) return "between_tools";
-	return "disabled";
+export function getClaudeThinkingOffMode<TApi extends Api>(model: Model<TApi>): ThinkingOffMode {
+	return getThinkingCapability(model).off;
 }
 
 /**
@@ -316,32 +461,23 @@ export function claudeThinksByDefault<TApi extends Api>(model: Model<TApi>): boo
 }
 
 /** Every dreb thinking level, in ascending order. */
-const THINKING_LEVEL_ORDER: readonly (ThinkingLevel | "off")[] = [
-	"off",
-	"minimal",
-	"low",
-	"medium",
-	"high",
-	"xhigh",
-	"max",
-];
+const THINKING_LEVEL_ORDER: readonly (ThinkingLevel | "off")[] = ["off", ...THINKING_TIERS];
 
 /**
  * Thinking levels a model supports, in ascending order: `["off"]` for non-reasoning
- * models; otherwise the full scale minus `off` when thinking cannot be turned off
- * (Claude Opus 5.5+), `xhigh` without {@link supportsXhigh}, and `max` without
- * {@link supportsMax}.
+ * models; otherwise `"off"` prepended when thinking can be turned off, followed by the
+ * model's resolved tiers (which already omit `xhigh`/`max` where unsupported).
  */
 export function getAvailableThinkingLevels<TApi extends Api>(
 	model: Model<TApi> | undefined,
 ): (ThinkingLevel | "off")[] {
+	// Non-reasoning models offer only `off`, regardless of their declared off mode.
 	if (!model?.reasoning) return ["off"];
-	return THINKING_LEVEL_ORDER.filter((level) => {
-		if (level === "off") return supportsThinkingOff(model);
-		if (level === "xhigh") return supportsXhigh(model);
-		if (level === "max") return supportsMax(model);
-		return true;
-	});
+
+	const capability = getThinkingCapability(model);
+	// A model with no tiers but disableable thinking still offers `off` alone.
+	if (capability.off === "omit" && capability.levels.length > 0) return [...capability.levels];
+	return ["off", ...capability.levels];
 }
 
 /**
