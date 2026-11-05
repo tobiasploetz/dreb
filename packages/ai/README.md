@@ -544,6 +544,27 @@ thinking cannot be turned off). `clampThinkingLevel(model, level)` applies dreb'
 fallback rules (`off` → `minimal` on always-thinking models, `xhigh` → `max` or `high`,
 `max` → `xhigh` → `high`, non-reasoning → `off`).
 
+`getThinkingCapability(model)` is the single source of truth behind those helpers. It returns
+the model's resolved `{ levels, off, encoding }`: declared support on the model (`thinking`)
+when present, otherwise inference from the model id and API. Set `thinking` on a `Model` to give
+a custom or proxied model tiers the inference cannot know about:
+
+```typescript
+const model: Model<"anthropic-messages"> = {
+  // ...
+  reasoning: true,
+  thinking: {
+    levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+    off: "disabled",
+    encoding: { kind: "effort", field: "output_config.effort" },
+  },
+};
+```
+
+Declared tiers are normalised on read (ascending, deduped, unknown values dropped) and
+`encoding.kind` is what providers will branch on; today only `"adaptive"` and `off` influence
+request construction.
+
 ## Stop Reasons
 
 Every `AssistantMessage` includes a `stopReason` field that indicates how the generation ended:

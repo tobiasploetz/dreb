@@ -142,7 +142,7 @@ OAuth credentials are also stored here after `/login` and managed automatically.
 
 ## Claude Thinking Levels
 
-On Anthropic-native transports — the Anthropic Messages API (Anthropic, GitHub Copilot, opencode, and custom Anthropic-compatible endpoints) plus Amazon Bedrock — dreb picks Claude thinking and effort fields per model. Capability detection is by model id, so custom `models.json` entries behave the same as built-in ones.
+On Anthropic-native transports — the Anthropic Messages API (Anthropic, GitHub Copilot, opencode, and custom Anthropic-compatible endpoints) plus Amazon Bedrock — dreb picks Claude thinking and effort fields per model. Capability detection infers from the model id, so custom `models.json` entries behave the same as built-in ones; a declared [`thinking`](models.md#thinking-capability) capability overrides the inference.
 
 | Model | Thinking on | dreb `off` sends | `off` offered | `xhigh` | `max` |
 |---|---|---|---|---|---|
